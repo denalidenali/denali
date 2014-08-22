@@ -1,0 +1,53 @@
+diff --git a/drivers/net/wireless/ath/ath9k/ar9003_phy.c b/drivers/net/wireless/ath/ath9k/ar9003_phy.c
+index e476f9f..c36fa1e 100644
+--- a/drivers/net/wireless/ath/ath9k/ar9003_phy.c
++++ b/drivers/net/wireless/ath/ath9k/ar9003_phy.c
+@@ -564,6 +564,12 @@ static void ar9003_hw_set_chain_masks(struct ath_hw *ah, u8 rx, u8 tx)
+ 	}
+ }
+ 
++static void setting_fcs_fail(struct ath_hw *ah)
++{
++    REG_SET_BIT(ah, AR_DIAG_SW, AR_DIAG_CORR_FCS);
++    printk("Denali: set the fcs fail bit\n");
++}
++
+ /*
+  * Override INI values with chip specific configuration.
+  */
+@@ -591,6 +597,7 @@ static void ar9003_hw_override_ini(struct ath_hw *ah)
+ 
+ 	REG_SET_BIT(ah, AR_PHY_CCK_DETECT,
+ 		    AR_PHY_CCK_DETECT_BB_ENABLE_ANT_FAST_DIV);
++    setting_fcs_fail(ah);
+ }
+ 
+ static void ar9003_hw_prog_ini(struct ath_hw *ah,
+diff --git a/drivers/net/wireless/ath/ath9k/init.c b/drivers/net/wireless/ath/ath9k/init.c
+index b05095a..aab4c92 100644
+--- a/drivers/net/wireless/ath/ath9k/init.c
++++ b/drivers/net/wireless/ath/ath9k/init.c
+@@ -738,7 +738,7 @@ void ath9k_set_hw_capab(struct ath_softc *sc, struct ieee80211_hw *hw)
+ 	hw->max_rates = 4;
+ 	hw->channel_change_time = 5000;
+ 	hw->max_listen_interval = 1;
+-	hw->max_rate_tries = 10;
++	hw->max_rate_tries = 0; /*for Denali*/
+ 	hw->sta_data_size = sizeof(struct ath_node);
+ 	hw->vif_data_size = sizeof(struct ath_vif);
+ 
+diff --git a/drivers/net/wireless/ath/ath9k/xmit.c b/drivers/net/wireless/ath/ath9k/xmit.c
+index 88b6acc..4ca750b 100644
+--- a/drivers/net/wireless/ath/ath9k/xmit.c
++++ b/drivers/net/wireless/ath/ath9k/xmit.c
+@@ -1769,6 +1769,10 @@ static void ath_tx_send_ampdu(struct ath_softc *sc, struct ath_atx_tid *tid,
+ static void ath_tx_send_normal(struct ath_softc *sc, struct ath_txq *txq,
+ 			       struct ath_atx_tid *tid, struct sk_buff *skb)
+ {
++    struct ath_hw *ah = sc->sc_ah;
++    REG_SET_BIT(ah, AR_DIAG_SW, AR_DIAG_CORR_FCS);
++    // printk("Denali: set the fcs fail bit\n");
++
+ 	struct ath_frame_info *fi = get_frame_info(skb);
+ 	struct list_head bf_head;
+ 	struct ath_buf *bf;
