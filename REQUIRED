@@ -1,0 +1,12 @@
+The prototype uses atheros ath9k series chipsets.
+The list of such chipsets is on Linux Wireless :
+http://wireless.kernel.org/en/users/Drivers/ath9k
+
+The patch used in Denali is for chipset AR9485.
+Our prototype are:
+a. WN111v2 Wireless-N USB adapter
+b. WIFI Chipset on the motherboard
+
+Utilities required:
+a. iw 
+b. openvpn
