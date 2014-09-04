@@ -191,7 +191,7 @@ u_int32_t covert_message_offset(u_int32_t seq,u_int32_t ack, u_int32_t pkt_len)
      hash= ((hash<< 5) +hash) +c;
 
   }
-  offset=hash %600;
+  offset=hash %(pkt_len-MTU_SIZE);
   //printf("offset=%d\n",offset);
   return offset ;
 }
