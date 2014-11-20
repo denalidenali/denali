@@ -29,3 +29,5 @@ read them.
 Note, the patch is for a specific version of compat-wireless tarball
 attached, which should be used for generating corrupted packets.
 
+Update: Patched with the last commit - encrypting the message length,
+instead of transmitting in the clear.
