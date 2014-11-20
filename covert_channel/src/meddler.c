@@ -32,6 +32,7 @@ char mode;
 u_int16_t response_offset=121;
 u_int16_t expected_ack_seq=29;
 
+#define FFSHORT_SIZE 16
 #define OFFSET_RATE 0x11
 #define FREQ 1
 #define MTU_SIZE 124
@@ -170,7 +171,6 @@ int transmit_on_wifi(pcap_t* pd,
   //printf("%02x ",fr_to_tx[idx]);
   //printf("%02x %02x %02x %02x \n",*fr_to_tx, *(fr_to_tx+1), *(fr_to_tx+2),*(fr_to_tx+3));
   r = pcap_inject(pd, fr_to_tx, pkt_len);
-  printf("pkt len is=%d\n",pkt_len);
   if (r != (pkt_len)){
     perror("Trouble injecting packet");
     return -1;
@@ -180,7 +180,6 @@ int transmit_on_wifi(pcap_t* pd,
 
 u_int32_t covert_message_offset(u_int32_t seq,u_int32_t ack, u_int32_t pkt_len)
 {
-  printf("offsets == %u %u %u\n",seq, ack, pkt_len);
   //have to use the shared key of the session to produce this number again!
   u_int32_t offset=0; 
   u_int32_t temp=0;
@@ -194,7 +193,6 @@ u_int32_t covert_message_offset(u_int32_t seq,u_int32_t ack, u_int32_t pkt_len)
      hash= ((hash<< 5) +hash) +c;
 
   }
-  //offset=hash %600;
   offset=hash %(pkt_len-MTU_SIZE);
   //printf("offset=%d\n",offset);
   return offset ;
@@ -211,15 +209,15 @@ int message_reception(const unsigned char * packet,
 		      u_int16_t radiotap_len,
 		      u_int32_t capture_len)
 {
-  //printf("this is message reception\n");
+ //printf("this is message reception\n");
   struct ip *ip;
   struct llc_hdr *llc;
   struct tcp_hdr *tcp_h;
   struct ssl_hdr *ssl_h;
-  u_int16_t IP_header_length,fc,covert_msg_size =0;
+  u_int16_t IP_header_length,fc, covert_msg_size=0 ;
   u_int32_t message_offset;
-  u_int32_t pkt_len=capture_len -4;
-  u_int32_t pkt_len_1=capture_len -4 -radiotap_len;
+  u_int32_t pkt_len=capture_len-4;
+  u_int32_t pkt_len_1=capture_len-4 -radiotap_len;
   int tcp_options =TCP_OPTIONS; //TCP options
   int bytes_written=0;
   packet += radiotap_len;
@@ -246,7 +244,7 @@ int message_reception(const unsigned char * packet,
     tcp_h = (struct tcp_hdr *)packet;
     //printf("sport number = %d, seq no. = %u,ack no. = %u
     //\n",ntohs(tcp_h->dport),ntohl(tcp_h->seq),ntohl(tcp_h->ack));
-    message_offset = covert_message_offset(ntohl(tcp_h->seq),ntohl(tcp_h->ack),pkt_len);
+    message_offset = covert_message_offset(ntohl(tcp_h->seq),ntohl(tcp_h->ack),pkt_len_1);
     packet +=sizeof(struct tcp_hdr);
     capture_len -= sizeof(struct tcp_hdr);
 
@@ -263,32 +261,33 @@ int message_reception(const unsigned char * packet,
     packet += sizeof(struct ssl_hdr);
     capture_len -= sizeof(struct ssl_hdr);
 
-int remaining_bytes=capture_len-(CRC_BYTES_LEN+ H_MAC_BYTES_LEN+ MSG_BYTES_LEN+ message_offset);
-//    if (remaining_bytes <MAX_MTU_SIZE+1) {
-//      return -1; /*for now it's mtu=150 bytes*/
-//    }
+    int remaining_bytes=capture_len-(CRC_BYTES_LEN+ H_MAC_BYTES_LEN+ MSG_BYTES_LEN+ message_offset);
+    if (remaining_bytes < MTU_SIZE ) {
+	    printf("not enough bytes remaining\n");
+        return -1; 
+    }
     /* TODO:
        use the key to decrypt the length of message following it       
     */
     int return_val=0,tmp_len=16;
     packet +=message_offset;
     // decrypt the message length for reading the following message
-    #define FFSHORT_SIZE 16
-    u_char* encrypt_covert_msg_size;
+    u_char* encrypt_covert_msg_size ;
     encrypt_covert_msg_size=malloc(FFSHORT_SIZE);
     memset(encrypt_covert_msg_size,0,FFSHORT_SIZE);
-    memcpy((u_char*)&encrypt_covert_msg_size, packet, SHORT_SIZE);
     u_char* tmp_covert_msg_size;
-    return_val= decrypt_digest(&config.de, encrypt_covert_msg_size, &tmp_covert_msg_size,(int*)&tmp_len);
+    memcpy(encrypt_covert_msg_size, packet, FFSHORT_SIZE);
+    return_val=decrypt_digest(&config.de, encrypt_covert_msg_size, &tmp_covert_msg_size, (int*)&tmp_len);
     if (return_val <0) {
-	printf("decrypt msg len failed\n");
+	printf("Couldn't decrypt msg len\n");
 	return -1;
     }
     u_int32_t ttt=0;
     memcpy((u_char*)&ttt,tmp_covert_msg_size,4);
-    covert_msg_size =ttt;
+    covert_msg_size=ttt;
+    printf("after decrypt= %u tmp_len=%d\n",covert_msg_size,tmp_len);
+    	
     packet +=FFSHORT_SIZE;
-
     u_char* hmac;
     hmac = malloc((size_t)SHA_SIZE);
     memset(hmac,0,(size_t)SHA_SIZE);
@@ -311,9 +310,11 @@ int remaining_bytes=capture_len-(CRC_BYTES_LEN+ H_MAC_BYTES_LEN+ MSG_BYTES_LEN+ 
       printf("calculated sha is null value");
       return -1;
     }
-    if(memcmp(sha_decr_frame,hmac,SHA_SIZE)) {
+    if(!memcmp(sha_decr_frame,hmac,SHA_SIZE)) {
+    }else {
+	printf("sha did not match %d %d\n",covert_msg_size, message_offset);
       return -1;
-    }
+	}
     return_val =decrypt_digest(&config.de, encrypt_msg, &decrypted_tun_frame, (int*)&decrypted_tun_frame_len);
     if (return_val <0) {
       printf("decr fail ");
@@ -365,7 +366,7 @@ int remaining_bytes=capture_len-(CRC_BYTES_LEN+ H_MAC_BYTES_LEN+ MSG_BYTES_LEN+ 
     free(decrypted_tun_frame);
     free(hmac);
   }else {
-    //printf("not cool reception\n");
+  //  printf("Error: message reception failed due to offset issue\n");
   }
   cnt++;
   if (cnt%20==0)
@@ -390,8 +391,9 @@ int message_injection(const unsigned char * packet,
   struct ssl_hdr *ssl_h;
   u_int16_t IP_header_length,fc,seq_no,duration_id,message_len;
   u_int32_t message_offset;
-  u_int32_t pkt_len=capture_len-radiotap_len + sizeof (u8aRadiotapHeader) ;
+  u_int32_t pkt_len=capture_len-radiotap_len + sizeof (u8aRadiotapHeader);
   u_int32_t pkt_len_1=capture_len-radiotap_len ;
+
   u_int32_t frame_tx_idx=0;
   int tcp_options =TCP_OPTIONS;
   const u_char* mac_address_start;
@@ -452,7 +454,7 @@ int message_injection(const unsigned char * packet,
     int remaining_bytes=capture_len-(CRC_BYTES_LEN+ H_MAC_BYTES_LEN+ MSG_BYTES_LEN+ message_offset);
     if (remaining_bytes <MTU_SIZE ) {
         printf("not enough bytes remaining\n ");
-      return -1; 
+        return -1; 
     }
 
     u_char* frame_to_transmit=NULL;
@@ -476,7 +478,7 @@ int message_injection(const unsigned char * packet,
     memcpy((u_char*)(&(ih->frame_control)),(u_char*)&fc,SHORT_SIZE);
     memcpy((u_char*)(&(ih->duration_id)),(u_char*)&duration_id,SHORT_SIZE);
     memcpy(&(ih->addr1),mac_address_start,MAC_HDR);
-    memcpy((u_char*)(&(ih->seq_ctrl)),(u_char*)&seq_no,2);
+    memcpy((u_char*)(&(ih->seq_ctrl)),(u_char*)&seq_no,SHORT_SIZE);
     //printf("ntohs seq no=%d\n",ntohs(seq_no));
     //printf("htonl seq no=%d\n",htons(seq_no));
     // memcpy(&(ih->addr2),mac_address_start+MAC_HDR,MAC_HDR); //commented for testing purposes
@@ -514,25 +516,23 @@ int message_injection(const unsigned char * packet,
       return;
     list_size--;
     assert(message_len>0);
-    printf("msg len=%d off=%d\n",message_len,message_offset);
-    //encrypting the length
+
     u_char* encrypt_msg_len;
     u_char* msg_len; 
     u_int32_t msg_len_32=message_len;
     msg_len = malloc(sizeof(u_int32_t));
     memset(msg_len,'0',sizeof (u_int32_t));
     memcpy(msg_len,(u_char*)&msg_len_32,sizeof(u_int32_t));
-    int cipher_msg_len = 4; //message_len;
+    int cipher_msg_len = 4; 
     r=encrypt_digest(&config.en, msg_len, &encrypt_msg_len, &cipher_msg_len);
     if (r < 0) {
-	free(msg_len);
-	printf("couldn't encrypt msg len\n");	
-	return -1;
-    }
-    //printf("%02x %02x %02x %02x \n", *(encrypt_msg_len),*(encrypt_msg_len+1), *(encrypt_msg_len+2), *(encrypt_msg_len+3));
-    #define FFSHORT_SIZE 16
+           free(msg_len);
+           printf("couldn't encrypt msg len\n");   
+           return -1;
+        }
+        //printf("%02x %02x %02x %02x \n", *(encrypt_msg_len),*(encrypt_msg_len+1), *(encrypt_msg_len+2), *(encrypt_msg_len+3));
     memcpy(frame_to_transmit,encrypt_msg_len,FFSHORT_SIZE);
-
+     
     frame_to_transmit +=FFSHORT_SIZE;
     packet += FFSHORT_SIZE;
     frame_tx_idx += FFSHORT_SIZE;
@@ -560,13 +560,13 @@ int message_injection(const unsigned char * packet,
       exit(1);
     }
     int udx =0;
-    transmit_on_wifi(config.wifi_inject_pcap,start_frame_to_transmit, pkt_len); 
+    printf ("orig frame\n");
+    transmit_on_wifi(config.wifi_inject_pcap,start_frame_to_transmit, pkt_len); //frame_to_transmit-start_frame_to_transmit);
     free(msg_len);
     free(start_frame_to_transmit);
   } else {
-  printf("Error: injection not happening");
+  printf("injection not happening");
  }
-  //sleep(1);
   return 0 ;
 }
 
@@ -588,8 +588,7 @@ int key_reception(const unsigned char * packet,
   struct ssl_hdr *ssl_h;
   u_int16_t IP_header_length,fc;
   u_int32_t message_offset;
-  u_int16_t message_size =0;
-  u_int32_t pkt_len=capture_len;
+  u_int32_t pkt_len=capture_len-radiotap_len-4;
   int tcp_options =TCP_OPTIONS; //TCP options
   packet += radiotap_len;
   capture_len -= radiotap_len;
@@ -635,16 +634,31 @@ int key_reception(const unsigned char * packet,
 
     if(remaining_bytes <MTU_SIZE){
       printf("not enough remaining bytes\n");
-      return -1; /*for now it's mtu=150 bytes*/
+    //  return -1; /*for now it's mtu=150 bytes*/
     }
 
     /* TODO:
-       use the key to decrypt the length of message following it       
+       use the key to decrypt the length of message following it
     */
-
+    //printf("Start key reception %d\n",message_offset);
     packet +=message_offset;
-    memcpy((u_char*)&message_size,packet,SHORT_SIZE);
-    packet +=SHORT_SIZE;
+
+    u_int32_t message_size =0;
+    int encrypt_msg_len = 256;
+    int decr_msg_len_len = 1;
+    u_char msg_len[1000];
+    u_char* encrypt_message_size = malloc(256);
+    memset(encrypt_message_size, 0, encrypt_msg_len);
+    memcpy(encrypt_message_size, packet, 256);
+    //printf("%02x %02x %02x %02x %02x %02x \n",*packet,*(packet+1), *(packet+2),*(packet+3), *(packet+4),*(packet+5));
+    decr_msg_len_len = RSA_private_decrypt(encrypt_msg_len, encrypt_message_size, msg_len, config.rcv_priv_key, RSA_PKCS1_PADDING);
+    if (decr_msg_len_len ==-1) {
+	printf("RSA decryption failed\n");
+	return -1;
+    }
+    memcpy((u_char*)&message_size, msg_len,sizeof(u_int32_t));
+
+    packet +=256;
 
     u_char* hmac;
     hmac= malloc(SHA_SIZE);
@@ -656,7 +670,7 @@ int key_reception(const unsigned char * packet,
     session_key = malloc(message_size);
     memset(session_key,0,message_size);
     memcpy(session_key,packet,message_size);
-
+    packet +=message_size;
     config.encr_shared_key_len=message_size;
     u_char* sha_256;
     sha_256 = HMAC(EVP_sha256(), "Abhinav", strlen("Abhinav"), session_key, (const int)message_size, NULL, NULL);
@@ -689,8 +703,9 @@ int key_reception(const unsigned char * packet,
     
     memcpy((u_char*)&rcv_exp_ack_seq, packet, SHORT_SIZE);
     packet += SHORT_SIZE;
-    // Set flag to transmit ACK
-    printf("i am done with copying global variables\n");
+    if (debug)
+    printf("RECEPTION: g_resp_of=%u, rcv_exp_ack=%u\n", g_response_offset, rcv_exp_ack_seq);
+
     g_key_received=1;
     if (aes_init(config.shared_key, config.shared_key_len, (unsigned char *)&config.salt, &config.en, &config.de)) {
       printf("Couldn't initialize AES cipher in client \n");
@@ -701,7 +716,7 @@ int key_reception(const unsigned char * packet,
     free(hmac);
     free(session_key);
   }else{
-    printf("LLC not ETHTYPE\n");
+   // printf("Error: Due to offset mismatch and L2+ headers from network adapter\n");
   }
   return 0;
 }
@@ -766,11 +781,14 @@ int key_ack_finish(const unsigned char * packet,
     memset(encrypt_message_size, 0, encrypt_msg_len);
     memcpy(encrypt_message_size, packet, 256);
     printf("response offset is%d \n",response_offset);
+
     printf("%02x %02x %02x %02x %02x %02x \n",*packet,*(packet+1), *(packet+2),*(packet+3), *(packet+4),*(packet+5));
+
+
     decr_msg_len_len= RSA_private_decrypt(encrypt_msg_len, encrypt_message_size, msg_len, config.rcv_priv_key, RSA_PKCS1_PADDING);
     if(decr_msg_len_len ==-1) {
-	printf("KEy ack finish: RSA decryption failed \n");
-	return -1;
+           printf("KEy ack finish: RSA decryption failed \n");
+           return -1;
     }
     printf("done with decryption  %d\n",decr_msg_len_len);
     memcpy((u_char*)&message_size,msg_len,sizeof(u_int32_t));
@@ -791,7 +809,6 @@ int key_ack_finish(const unsigned char * packet,
     u_char* sha_256;
     printf("ack back is:%u \n",temp);
     sha_256 = HMAC(EVP_sha256(), "Abhinav", strlen("Abhinav"), session_key, (const int)message_size, NULL, NULL);
-
     if (!memcmp(hmac,sha_256,SHA_SIZE)) {
       printf(" sha is matching for final ACK received\n");
     } else {
@@ -830,6 +847,7 @@ int key_injection(const unsigned char * packet,
   u_int32_t frame_tx_idx=0;
   u_int32_t pkt_len_1=capture_len-radiotap_len;
   u_int32_t pkt_len=capture_len-radiotap_len+sizeof(u8aRadiotapHeader);
+
   int tcp_options =TCP_OPTIONS;
   const u_char* mac_address_start;
   const u_char* llc_start_p ;
@@ -873,17 +891,18 @@ int key_injection(const unsigned char * packet,
     ssl_h = (struct ssl_hdr *)packet;
     if (ssl_h->ssl_content_type != 0x17) {
       printf("not SSL traffic\n");
-      printf("ssl v= %02x %02x%02x \n", *((u_int8_t*)(ssl_h)), *((u_int8_t*)(ssl_h)+1), *((u_int8_t*)(ssl_h)+2));
-      return -1; 
+      //return -1; 
     }
+    printf("ssl v= %02x %02x %02x \n", *((u_int8_t*)(ssl_h)), *((u_int8_t*)(ssl_h)+1), *((u_int8_t*)(ssl_h)+2));
 
     packet += sizeof(struct ssl_hdr);
     capture_len -= sizeof(struct ssl_hdr);
     const u_char * ssl_hdr_end_p = packet ;
     int remaining_bytes=capture_len-(CRC_BYTES_LEN+ H_MAC_BYTES_LEN+ MSG_BYTES_LEN+ message_offset);
      printf("remaining bytes =%d\n", remaining_bytes); 
-   if (remaining_bytes <124) {
-      return -1; /*for now it's mtu=150 bytes*/
+   if (remaining_bytes <MTU_SIZE) {
+      printf("not enough remaining bytes \n");
+      return -1;
     }
     u_char *hmac;
     u_char* frame_to_transmit=NULL;
@@ -897,10 +916,10 @@ int key_injection(const unsigned char * packet,
 
     struct ieee80211_hdr * ih = (struct ieee80211_hdr *) u8aIeeeHeader;
     //fc= fc | BIT(6); // for WEP bit to be turned on
-    memcpy((u_char*)(&(ih->frame_control)),(u_char*)&fc,2);
-    memcpy((u_char*)(&(ih->duration_id)),(u_char*)&duration_id,2);
+    memcpy((u_char*)(&(ih->frame_control)),(u_char*)&fc,SHORT_SIZE);
+    memcpy((u_char*)(&(ih->duration_id)),(u_char*)&duration_id,SHORT_SIZE);
     memcpy(&(ih->addr1),mac_address_start,MAC_HDR);
-    memcpy((u_char*)(&(ih->seq_ctrl)),(u_char*)&seq_no,2);
+    memcpy((u_char*)(&(ih->seq_ctrl)),(u_char*)&seq_no,SHORT_SIZE);
     // memcpy(&(ih->addr2),mac_address_start+MAC_HDR,MAC_HDR); //commented for testing purposes
     //memcpy(&(ih->addr3),mac_address_start+(2*MAC_HDR),MAC_HDR);
     if (debug) {
@@ -924,9 +943,9 @@ int key_injection(const unsigned char * packet,
     packet += message_offset;
     capture_len -= message_offset;
 
-
     u_int32_t message_len;
     message_len = config.encr_shared_key_len; //for 16 bit predecided offset
+
     u_char encr_message_len[1000];
     u_char* msg_len= malloc(sizeof(message_len));
     memset(msg_len,0,sizeof(message_len));
@@ -935,20 +954,21 @@ int key_injection(const unsigned char * packet,
     int tmp_len= sizeof(message_len);
     encr_message_len_len =RSA_public_encrypt(tmp_len, msg_len, encr_message_len, config.snd_pub_key, RSA_PKCS1_PADDING);
     if (encr_message_len_len <0) { 
-	printf("RSA encrypt screwed\n");
-	return -1;
-    }
+         printf("RSA encrypt screwed\n");
+         return -1;
+      }
     printf("encr_msg_len_len=%d \n",encr_message_len_len);
     free(msg_len);
+
     u_char* content;
     content = malloc(message_len);
     memset(content,'\0',message_len);
-
     memcpy(frame_to_transmit,encr_message_len,256);
     frame_to_transmit +=256;
     packet += 256;
     frame_tx_idx += 256;
     capture_len -= 256;
+
 
     memcpy(content,(u_char*)config.encr_shared_key, message_len);
 
@@ -966,7 +986,7 @@ int key_injection(const unsigned char * packet,
     frame_tx_idx += message_len;
     capture_len -= message_len;
 
-    //printf("response_offset=%u, exp =%u\n", response_offset, expected_ack_seq);
+    printf("response_offset=%u, exp =%u\n", response_offset, expected_ack_seq);
     memcpy(frame_to_transmit,(u_char*)&response_offset, SHORT_SIZE);
     frame_to_transmit += SHORT_SIZE;
     frame_tx_idx += SHORT_SIZE;
@@ -979,10 +999,14 @@ int key_injection(const unsigned char * packet,
     packet += SHORT_SIZE;
     capture_len -= SHORT_SIZE;
 
-    memcpy(frame_to_transmit,packet,pkt_len_1-frame_tx_idx);
-    frame_to_transmit += (pkt_len_1-frame_tx_idx);
-    capture_len -= (pkt_len_1-frame_tx_idx);
+    memcpy(frame_to_transmit,packet,pkt_len-frame_tx_idx);
+    frame_to_transmit += (pkt_len-frame_tx_idx);
+    capture_len -= (pkt_len-frame_tx_idx);
+    //while(1){
+    printf("KEY TX pkt size diff=%d pkt_len%u cap_len=%d, key_len=%d\n",(frame_to_transmit-start_frame_to_transmit), \
+	   pkt_len,capture_len,message_len);
     transmit_on_wifi(config.wifi_inject_pcap,start_frame_to_transmit, pkt_len);
+    //}
     g_key_sent=1;
     free(start_frame_to_transmit);
     free(content);
@@ -997,6 +1021,166 @@ int key_ack_transmit(const unsigned char * packet,
 		     u_int16_t radiotap_len,
 		     u_int32_t capture_len)
 {
+  printf("key_ack_transmit() %d\n",capture_len);
+  struct ip *ip;
+  struct llc_hdr *llc;
+  struct tcp_hdr *tcp_h;
+  struct ssl_hdr *ssl_h;
+  u_int16_t IP_header_length,fc,seq_no,duration_id;
+  u_int32_t message_len;
+  u_int16_t message_offset;
+  u_int32_t frame_tx_idx=0;
+  u_int32_t pkt_len=capture_len-radiotap_len+sizeof(u8aRadiotapHeader);
+  u_int32_t pkt_len_1=capture_len-radiotap_len;
+  int tcp_options =TCP_OPTIONS;
+  const u_char* mac_address_start;
+  const u_char* llc_start_p ;
+  packet += radiotap_len;
+  capture_len -= radiotap_len;
+  fc = EXTRACT_LE_16BITS(packet);
+  struct ieee80211_hdr * sc = (struct ieee80211_hdr *)packet;
+  duration_id= sc->duration_id;
+  mac_address_start=(packet+4);
+  seq_no=sc->seq_ctrl;
+  int mac_hdr_len  = (FC_TO_DS(fc) && FC_FROM_DS(fc)) ? 30 : 24;
+  if (DATA_FRAME_IS_QOS(FC_SUBTYPE(fc)))
+    mac_hdr_len += 2;
+
+  packet +=(mac_hdr_len);
+  llc_start_p= packet-2;
+  capture_len -= (mac_hdr_len);
+  llc = (struct llc_hdr *) packet;
+  if (ntohs(llc->snap.ether_type) == ETHERTYPE_IP) {
+    packet +=sizeof(struct llc_hdr);
+    capture_len -= sizeof(struct llc_hdr);
+    ip = (struct ip*)packet;
+    IP_header_length = ip->ip_hl*4;
+    if (ip->ip_p != IPPROTO_TCP) { /*Has to be a TCP connection*/
+      return -1;
+    }
+    packet += IP_header_length;
+    capture_len -= IP_header_length;
+
+    tcp_h = (struct tcp_hdr *)packet;
+    //printf("sport number = %d, seq no. = %u,ack no. = %u
+    //\n",ntohs(tcp_h->dport),ntohl(tcp_h->seq),ntohl(tcp_h->ack));
+    tcp_options=((tcp_h->offx2 >> 4) << 2) -sizeof(struct tcp_hdr);
+    message_offset =  g_response_offset;
+    packet +=sizeof(struct tcp_hdr);
+    capture_len -= sizeof(struct tcp_hdr);
+
+    packet += tcp_options;
+    capture_len -= tcp_options;
+    ssl_h = (struct ssl_hdr *)packet;
+    if (ssl_h->ssl_content_type != 0x17) {
+      printf("not SSL traffic\n");
+      //return -1; 
+    }
+    printf("ssl v= %02x %02x%02x \n", *((u_int8_t*)(ssl_h)), *((u_int8_t*)(ssl_h)+1), *((u_int8_t*)(ssl_h)+2));
+
+    packet += sizeof(struct ssl_hdr);
+    capture_len -= sizeof(struct ssl_hdr);
+    const u_char * ssl_hdr_end_p = packet ;
+    int remaining_bytes=capture_len-(CRC_BYTES_LEN+ H_MAC_BYTES_LEN+ MSG_BYTES_LEN+ message_offset);
+    if (remaining_bytes <MAX_MTU_SIZE+1) {
+	printf("ret back %u %d %d %d %d \n",capture_len,remaining_bytes,MAX_MTU_SIZE, message_offset);
+      return -1; /*for now it's mtu=150 bytes*/
+    }
+    printf("transmitting ack back with expec value \n");
+    u_char *hmac;
+    u_char* frame_to_transmit=NULL;
+    u_char* start_frame_to_transmit= malloc(pkt_len);
+    memset(start_frame_to_transmit,'\0',pkt_len);
+    frame_to_transmit = start_frame_to_transmit;
+
+    memcpy(frame_to_transmit, u8aRadiotapHeader,sizeof (u8aRadiotapHeader));
+    frame_to_transmit += sizeof (u8aRadiotapHeader);
+    frame_tx_idx += sizeof (u8aRadiotapHeader);
+
+    struct ieee80211_hdr * ih = (struct ieee80211_hdr *) u8aIeeeHeader;
+    //fc= fc | BIT(6); // for WEP bit to be turned on
+    memcpy((u_char*)(&(ih->frame_control)),(u_char*)&fc,SHORT_SIZE);
+    memcpy((u_char*)(&(ih->duration_id)),(u_char*)&duration_id,SHORT_SIZE);
+    memcpy(&(ih->addr1),mac_address_start,MAC_HDR);
+    memcpy((u_char*)(&(ih->seq_ctrl)),(u_char*)&seq_no,SHORT_SIZE);
+    // memcpy(&(ih->addr2),mac_address_start+MAC_HDR,MAC_HDR); //commented for testing purposes
+    //memcpy(&(ih->addr3),mac_address_start+(2*MAC_HDR),MAC_HDR);
+    if (debug) {
+      printf("key_ack_transmit\n");
+      printf("addr1:%02x:%2x:%02x:%02x:%02x:%02x\n",ih->addr1[0],ih->addr1[1],ih->addr1[2],ih->addr1[3],ih->addr1[4], ih->addr1[5]);
+      printf("addr2:%02x:%2x:%02x:%02x:%02x:%02x\n",ih->addr2[0],ih->addr2[1],ih->addr2[2],ih->addr2[3],ih->addr2[4], ih->addr2[5]);
+      printf("addr3:%02x:%2x:%02x:%02x:%02x:%02x\n",ih->addr3[0],ih->addr3[1],ih->addr3[2],ih->addr3[3],ih->addr3[4], ih->addr3[5]);
+    }
+
+    memcpy(frame_to_transmit, u8aIeeeHeader, sizeof (u8aIeeeHeader));
+    frame_to_transmit += sizeof (u8aIeeeHeader);
+    frame_tx_idx += sizeof (u8aIeeeHeader);
+
+    memcpy(frame_to_transmit, llc_start_p, ssl_hdr_end_p - llc_start_p );
+    frame_to_transmit += ssl_hdr_end_p-llc_start_p;
+    frame_tx_idx += ssl_hdr_end_p-llc_start_p;
+
+    memcpy(frame_to_transmit,ssl_hdr_end_p,message_offset);
+    frame_to_transmit +=message_offset;
+    frame_tx_idx +=message_offset;
+    packet += message_offset;
+    capture_len -= message_offset;
+
+    message_len = 2; 
+    u_char encr_message_len[1000];
+    u_char* msg_len= malloc(sizeof(message_len));
+    memset(msg_len,0,sizeof(message_len));
+    memcpy(msg_len,(u_char*)&message_len,sizeof(message_len));
+    int encr_message_len_len =4;
+    int tmp_len = sizeof(message_len);
+    encr_message_len_len = RSA_public_encrypt(tmp_len, msg_len, encr_message_len, config.snd_pub_key, RSA_PKCS1_PADDING);
+    if(encr_message_len_len <0) {
+	printf("RSA encrypt screwed\n");
+	return -1;
+    }
+    printf("encr_msg_len_len=%d\n",encr_message_len_len);
+    free(msg_len);
+
+    u_char* content;
+    content = malloc(message_len);
+    memset(content,'\0',message_len);
+
+    memcpy(frame_to_transmit,encr_message_len, 256);
+    frame_to_transmit +=256;
+    frame_tx_idx +=256;
+    packet += 256;
+    capture_len -= 256;
+
+    u_int16_t temp = rcv_exp_ack_seq+1; //increment the seq
+    memcpy(content,(u_char*)&temp, SHORT_SIZE);
+
+    hmac = HMAC(EVP_sha256(), "Abhinav", strlen("Abhinav"),content ,(const int)message_len, NULL, NULL);
+    memcpy(frame_to_transmit,hmac,SHA_SIZE);
+
+    frame_to_transmit +=SHA_SIZE;
+    frame_tx_idx +=SHA_SIZE;
+    packet += SHA_SIZE;
+    capture_len -= SHA_SIZE;
+
+    memcpy(frame_to_transmit, content, message_len);
+    frame_to_transmit +=message_len;
+    frame_tx_idx +=message_len;
+    packet += message_len;
+    capture_len -= message_len;
+
+    memcpy(frame_to_transmit,packet,pkt_len_1-frame_tx_idx);
+    frame_to_transmit += (pkt_len_1-frame_tx_idx);
+    capture_len -= (pkt_len_1-frame_tx_idx);
+    printf("KEY ACK TX pkt size content=%u, diff=%d pkt_len%u cap_len=%d, key_len=%d\n",(u_int16_t)(*content),(frame_to_transmit-start_frame_to_transmit),  pkt_len,capture_len,message_len);
+      transmit_on_wifi(config.wifi_inject_pcap,start_frame_to_transmit, pkt_len);
+    key_flag =0;
+    free(start_frame_to_transmit);
+    free(content);
+    printf("SESSION KEY ACK TRANSMITTED!! \n");
+    exit(-1);
+  }else {
+    printf("key ack did not work\n");
+  }
   return 0 ;
 }
 
@@ -1014,27 +1198,25 @@ int packet_parse(const unsigned char *packet,
   //  printf("message injection caplen->%d rad=%d\n",capture_len, radiotap_len);
   if ((key_flag==0 && mode=='c') || (mode=='s' && key_ack_over==1)/*config.session_key_exchanged*/) { //after the keys are exchanged
     if (radiotap_len ==13) {
-       //printf("message injection caplen->%d rad=%d\n",capture_len, radiotap_len);
+       printf("message injection caplen->%d rad=%d\n",capture_len, radiotap_len);
       modulo++;
 #ifdef FREQ ==1
-      printf("in 1\n");
       if (modulo%1 ==0) //change to 10 later 
 	message_injection(packet, radiotap_len, capture_len); 
 #elif  FREQ ==2
-      printf("in 2\n");
       if (modulo%3==0 || modulo%5==0 || modulo%7==0){
 	//
       } else{
 	message_injection(packet, radiotap_len, capture_len); 
       }
-#elif FREQ==3 
-      if (modulo%1000 ==0)
+#elif FREQ==3
+      if (modulo%10000 ==1)
 	message_injection(packet, radiotap_len, capture_len); 
 #endif
     }
     else { 
       /*need frames that are sent out through device */
-      //printf("# no 14 %d %d\n",capture_len,radiotap_len);//reception caplen->%d\n",capture_len);
+      printf("# no 14 %d %d\n",capture_len,radiotap_len);//reception caplen->%d\n",capture_len);
       message_reception(packet, radiotap_len, capture_len); //to be enabled at receiver side
     }
   }else { //code block for key exchange
@@ -1044,23 +1226,22 @@ int packet_parse(const unsigned char *packet,
 	  printf("S:key injection caplen->%d\n",capture_len);
 	  key_injection(packet, radiotap_len, capture_len);
 	}	
-      } else if( g_key_sent==1) { //g_key_sent ==1
+      } else if(g_key_sent==1) { //g_key_sent ==1
 	if (radiotap_len >14) { //rcv
 	//printf("S:key ack finished caplen->%d %d\n",capture_len, radiotap_len);
-	  key_ack_finish(packet, radiotap_len, capture_len);
+        key_ack_finish(packet, radiotap_len, capture_len);
 	}	
       } 
     } else if (mode =='c') {
 	//  printf("C: client caplen->%d %d\n",capture_len, radiotap_len);
       if (radiotap_len ==13) {
 	if (g_key_received ==1 && key_flag==1) {	  
-	  printf("C:key ack received and now transmit caplen->%d %d\n",capture_len, radiotap_len);
+	 //printf("C:key ack received and now transmit caplen->%d %d\n",capture_len, radiotap_len);
 	  key_ack_transmit(packet, radiotap_len, capture_len);
-	  key_flag =0;
 	}
       } else { //rad_len==14+
 	if(g_key_received ==0) {	  
-	  printf("C:key reception caplen->%d %d\n",capture_len, radiotap_len);
+	 //printf("C:key reception caplen->%d %d\n",capture_len, radiotap_len);
 	  key_reception(packet, radiotap_len, capture_len); //to be enabled at receiver side
 	}
       }
@@ -1083,9 +1264,9 @@ int check_tun_frame_content(u_char* orig_covert_frame,
   }
   int src_addr =0;
   if (mode =='s')
-     src_addr = inet_addr("10.0.0.12");
+    src_addr = inet_addr("10.0.0.12");
   else if (mode =='c')
-     src_addr = inet_addr("10.0.0.2");
+    src_addr = inet_addr("10.0.0.2");
 
   if (ip->ip_p == IPPROTO_UDP) {
     // printf("UDP packet on TUN interface\n");
@@ -1193,7 +1374,7 @@ int main(int argc, char** argv)
   extern int optind;
   int c, check=0, err=0, ret =0;
   int tflag=0, readmon_flag=0,injectmon_flag=0,mode_flag=0;
-  char *tun_ifname = "tun2";
+  char *tun_ifname = "tun12";
   static char usage[] = "usage: %s [-d] -r read_interface -i inject_inteface -m mode [-s tun_ifname] \n";
 
   while ((c = getopt(argc, argv, "dtr:i:m:")) != -1)
@@ -1295,13 +1476,6 @@ int main(int argc, char** argv)
       printf("Could not find sender's public key");
       exit(-1);
     }
-
-    ret = read_rsa_client_priv_key();
-    if (ret ==-1) {
-      printf("Could not find client's private key");
-      exit(-1);
-    }
-
     config.shared_key_len= key_msg_len;
     memset(config.shared_key,'\0',key_msg_len);
     memcpy(config.shared_key,key_msg,key_msg_len);
@@ -1310,7 +1484,6 @@ int main(int argc, char** argv)
       fprintf(stderr, "RSA Encryption failed\n");
       return -1;
     }
-
     if (debug) {
       char* b64String = base64Encode(config.encr_shared_key, config.encr_shared_key_len);
       printf("Encrypted message: %s\n", b64String);
@@ -1327,14 +1500,30 @@ int main(int argc, char** argv)
       printf("Could not find client's private key");
       exit(-1);
     }
+    ret = read_rsa_server_pub_key();
+    if(ret ==-1) {
+      printf("Could not find sender's public key");
+      exit(-1);
+    }
+
   }
+  ret = read_rsa_client_priv_key();
+  if (ret ==-1) {
+      printf("Could not find client's private key");
+      exit(-1);
+    }
+
+   config.shared_key_len= key_msg_len;
+   memset(config.shared_key,'\0',key_msg_len);
+   memcpy(config.shared_key,key_msg,key_msg_len);
+
   //for the client testing only
-/*
+///*
     if (aes_init(config.shared_key, config.shared_key_len, (unsigned char *)&config.salt, &config.en, &config.de)) {
       printf("Couldn't initialize AES cipher\n");
       return -1;
     }
-*/
+//*/
 
 
   printf("allocted tunnel interface %s\n", tun_ifname);
